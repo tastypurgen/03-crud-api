@@ -16,25 +16,54 @@ interface RepositoryRequest {
   payload?: ProductPayload;
 }
 
+interface RepositoryResponse {
+  type: 'repository-response';
+  requestId: string;
+  success: boolean;
+  result?: unknown;
+  error?: string;
+}
+
+interface WorkerReadyMessage {
+  type: 'worker-ready';
+  port: number;
+}
+
+type WorkerMessage = RepositoryRequest | RepositoryResponse | WorkerReadyMessage;
+
 async function startPrimary(): Promise<void> {
   const repository = new InMemoryProductRepository();
   const workerCount = Math.max(1, availableParallelism() - 1);
-  const workerPorts = Array.from({ length: workerCount }, (_, index) => config.PORT + index + 1);
   const workerPortsById = new Map<number, string>();
+  const readyWorkerPorts = new Set<number>();
+  const expectedWorkerPorts = Array.from({ length: workerCount }, (_, index) => config.PORT + index + 1);
   let nextWorkerIndex = 0;
 
-  for (const port of workerPorts) {
+  for (const port of expectedWorkerPorts) {
     const worker = cluster.fork({
       WORKER_PORT: String(port),
     });
     workerPortsById.set(worker.id, String(port));
 
-    bindWorkerMessages(worker, repository);
+    bindWorkerMessages(worker, repository, readyWorkerPorts);
   }
 
+  await waitForInitialWorkers(expectedWorkerPorts, readyWorkerPorts);
+
   const loadBalancer = http.createServer((clientRequest, clientResponse) => {
-    const workerPort = workerPorts[nextWorkerIndex];
-    nextWorkerIndex = (nextWorkerIndex + 1) % workerPorts.length;
+    const activePorts = Array.from(readyWorkerPorts).sort((left, right) => left - right);
+    if (activePorts.length === 0) {
+      clientResponse.writeHead(503, {
+        'content-type': 'application/json',
+      });
+      clientResponse.end(JSON.stringify({
+        message: 'Service unavailable',
+      }));
+      return;
+    }
+
+    const workerPort = activePorts[nextWorkerIndex % activePorts.length];
+    nextWorkerIndex = (nextWorkerIndex + 1) % activePorts.length;
 
     const options: RequestOptions = {
       hostname: '127.0.0.1',
@@ -70,13 +99,14 @@ async function startPrimary(): Promise<void> {
     }
 
     workerPortsById.delete(worker.id);
+    readyWorkerPorts.delete(Number(workerPort));
 
     const replacement = cluster.fork({
       WORKER_PORT: workerPort,
     });
     workerPortsById.set(replacement.id, workerPort);
 
-    bindWorkerMessages(replacement, repository);
+    bindWorkerMessages(replacement, repository, readyWorkerPorts);
   });
 }
 
@@ -89,6 +119,10 @@ async function startWorker(): Promise<void> {
       port,
       host: '0.0.0.0',
     });
+    process.send?.({
+      type: 'worker-ready',
+      port,
+    } satisfies WorkerReadyMessage);
   } catch (error) {
     console.error(error);
     process.exitCode = 1;
@@ -118,9 +152,19 @@ async function handleRepositoryAction(
 function bindWorkerMessages(
   worker: Worker,
   repository: InMemoryProductRepository,
+  readyWorkerPorts: Set<number>,
 ): void {
-  worker.on('message', async (message: RepositoryRequest) => {
-    if (!message || message.type !== 'repository-request') {
+  worker.on('message', async (message: WorkerMessage) => {
+    if (!message) {
+      return;
+    }
+
+    if (message.type === 'worker-ready') {
+      readyWorkerPorts.add(message.port);
+      return;
+    }
+
+    if (message.type !== 'repository-request') {
       return;
     }
 
@@ -141,6 +185,15 @@ function bindWorkerMessages(
       });
     }
   });
+}
+
+async function waitForInitialWorkers(
+  expectedPorts: number[],
+  readyWorkerPorts: Set<number>,
+): Promise<void> {
+  while (expectedPorts.some((port) => !readyWorkerPorts.has(port))) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 if (cluster.isPrimary) {
