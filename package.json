@@ -2,7 +2,7 @@
   "name": "crud-api",
   "version": "1.0.0",
   "private": true,
-  "description": "Product catalog CRUD API built with Fastify",
+  "description": "Fastify product catalog CRUD API",
   "scripts": {
     "build": "esbuild src/server.ts src/cluster.ts --bundle --platform=node --target=node24 --format=cjs --outdir=dist",
     "start:dev": "tsx watch src/server.ts",
