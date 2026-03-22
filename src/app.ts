@@ -80,6 +80,13 @@ export function createApp(repository: ProductRepository): FastifyInstance {
       });
     }
 
+    const statusCode = getClientErrorStatusCode(error);
+    if (statusCode) {
+      return reply.status(statusCode).send({
+        message: getClientErrorMessage(error),
+      });
+    }
+
     if (error instanceof Error) {
       requestLog(error);
     } else {
@@ -96,4 +103,27 @@ export function createApp(repository: ProductRepository): FastifyInstance {
 
 function requestLog(error: Error): void {
   console.error(error);
+}
+
+function getClientErrorStatusCode(error: unknown): number | null {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'statusCode' in error &&
+    typeof error.statusCode === 'number' &&
+    error.statusCode >= 400 &&
+    error.statusCode < 500
+  ) {
+    return error.statusCode;
+  }
+
+  return null;
+}
+
+function getClientErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return 'Bad request';
 }

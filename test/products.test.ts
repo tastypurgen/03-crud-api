@@ -3,9 +3,32 @@ import assert from 'node:assert/strict';
 
 import { createApp } from '../src/app.js';
 import { InMemoryProductRepository } from '../src/repositories/in-memory-product-repository.js';
+import type { Product, ProductPayload, ProductRepository } from '../src/types.js';
 
 function buildApp() {
   return createApp(new InMemoryProductRepository());
+}
+
+class FailingProductRepository implements ProductRepository {
+  async getAll(): Promise<Product[]> {
+    throw new Error('boom');
+  }
+
+  async getById(_id: string): Promise<Product | null> {
+    throw new Error('boom');
+  }
+
+  async create(_payload: ProductPayload): Promise<Product> {
+    throw new Error('boom');
+  }
+
+  async update(_id: string, _payload: ProductPayload): Promise<Product | null> {
+    throw new Error('boom');
+  }
+
+  async delete(_id: string): Promise<boolean> {
+    throw new Error('boom');
+  }
 }
 
 const productPayload = {
@@ -129,6 +152,38 @@ test('unknown route returns a human-friendly 404 message', async () => {
 
   assert.equal(response.statusCode, 404);
   assert.equal(response.json().message, 'Route not found');
+
+  await app.close();
+});
+
+test('malformed JSON returns a 400 response', async () => {
+  const app = buildApp();
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/products',
+    payload: '{"name":"Broken"',
+    headers: {
+      'content-type': 'application/json',
+    },
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.match(response.json().message, /JSON/i);
+
+  await app.close();
+});
+
+test('unexpected repository errors return a 500 response', async () => {
+  const app = createApp(new FailingProductRepository());
+
+  const response = await app.inject({
+    method: 'GET',
+    url: '/api/products',
+  });
+
+  assert.equal(response.statusCode, 500);
+  assert.equal(response.json().message, 'Internal server error');
 
   await app.close();
 });
